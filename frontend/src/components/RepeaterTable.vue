@@ -2,7 +2,7 @@
   <b-container>
     <b-row align-h="center">
       <b-col>
-        <b-table :items="repeaters" :fields="fields" :sort-compare="sortCompare"></b-table>
+        <b-table :items="repeaters" :fields="filtered" :sort-compare="sortCompare"></b-table>
       </b-col>
     </b-row>
   </b-container>
@@ -10,23 +10,8 @@
 
 <script lang="ts">
 import { Component, Prop, Vue } from "vue-property-decorator";
-
-class Repeater {
-  latitude: number = 0;
-  longitude: number = 0;
-  channel?: number;
-  plan?: string;
-  agency?: string;
-  label?: string;
-  location?: string;
-  address?: string;
-  altitude?: number;
-  mast_height?: number;
-
-  constructor(options: Partial<Repeater>) {
-    Object.assign(this, options);
-  }
-}
+import Repeater from "@/api/Repeater";
+import { haversine, bearing, sortCompare, cmp, Coordinate } from "@/api/utils";
 
 interface PropField {
   key: keyof Repeater;
@@ -43,60 +28,38 @@ interface CalculatedField {
 
 type Field = PropField | CalculatedField;
 
-interface Coordinate {
-  latitude: number;
-  longitude: number;
+function exampleRepeaters(): Repeater[] {
+  return [
+    new Repeater({ latitude: -31.3828, longitude: 116.1068 }),
+    new Repeater({
+      latitude: -31.512,
+      longitude: 116.3023,
+      channel: 256,
+      agency: "DFES",
+      label: "DFES 258",
+      location: "JULIMAR",
+      address: "Optus Guyed Mast Off Julimar Road JULIMAR",
+      altitude: 303,
+      mast_height: 60
+    })
+  ];
 }
 
-function radians(degrees: number): number {
-  return (degrees * Math.PI) / 180;
+function validator(thing: any): thing is Repeater[] {
+  return (
+    thing &&
+    thing instanceof Array &&
+    thing.every(elem => elem instanceof Repeater)
+  );
 }
 
-function haversine(
-  first: Coordinate,
-  second: Coordinate,
-  radius: number = 6371e3
-): number {
-  const φ1 = radians(first.latitude);
-  const φ2 = radians(second.latitude);
-  const Δφ = radians(second.latitude - first.latitude);
-  const Δλ = radians(second.longitude - first.longitude);
-
-  const a =
-    Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
-    Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-
-  return radius * c;
-}
-
-function bearing(first: Coordinate, second: Coordinate): number {
-  var y =
-    Math.sin(second.longitude - first.longitude) * Math.cos(second.latitude);
-  var x =
-    Math.cos(first.latitude) * Math.sin(second.latitude) -
-    Math.sin(first.latitude) *
-      Math.cos(second.latitude) *
-      Math.cos(second.longitude - first.longitude);
-  return Math.atan2(y, x);
-}
-
-function toString(value: any): string {
-  if (!value) {
-    return "";
-  } else if (value instanceof Object) {
-    return Object.keys(value)
-      .sort()
-      .map(key => toString(value[key]))
-      .join(" ");
-  }
-  return String(value);
-}
+type Predicate<T> = (item: T) => boolean;
 
 @Component
 export default class RepeaterTable extends Vue {
   public latitude: number = -31.3811;
   public longitude: number = 116.1711;
+  public maximumDistance: number = Infinity;
   public fields: Field[] = [
     { key: "latitude", sortable: true },
     { key: "longitude", sortable: true },
@@ -116,25 +79,12 @@ export default class RepeaterTable extends Vue {
     { key: "altitude", sortable: true },
     { key: "mast_height", sortable: true }
   ];
-  public allRepeaters: Repeater[] = [
-    new Repeater({ latitude: -31.3828, longitude: 116.1068 }),
-    new Repeater({
-      latitude: -31.512,
-      longitude: 116.3023,
-      channel: 256,
-      agency: "DFES",
-      label: "DFES 258",
-      location: "JULIMAR",
-      address: "Optus Guyed Mast Off Julimar Road JULIMAR",
-      altitude: 303,
-      mast_height: 60
-    })
-  ];
+  @Prop({ required: true, validator })
+  public repeaters!: Repeater[];
 
-  public calculateRange(value: any, key: string, item: Repeater): string {
+  public calculateRange(value: any, key: string, item: Repeater): number {
     const distance = haversine(this, item) / 1000;
-    const rounded = Math.round(distance * 10) / 10;
-    return rounded.toString();
+    return Math.round(distance * 10) / 10;
   }
 
   public calculateBearing(value: any, key: string, item: Repeater): string {
@@ -147,19 +97,21 @@ export default class RepeaterTable extends Vue {
     return rounded.toString();
   }
 
-  public get repeaters(): Repeater[] {
-    // TODO: Apply filters and stuff
-    return this.allRepeaters;
+  public get filtered(): Repeater[] {
+    const isHappy = (it: Repeater) => this.conditions.every(c => c(it));
+
+    return this.repeaters.filter(isHappy);
+  }
+
+  private get conditions(): Predicate<Coordinate>[] {
+    return [item => haversine(this, item) < this.maximumDistance];
   }
 
   sortCompare(a: any, b: any, key: string): number {
-    // see https://github.com/bootstrap-vue/bootstrap-vue/issues/3178
-    const compare = (l: number, r: number) => (l < r ? -1 : l > r ? 1 : 0);
-
     if (key == "range" && a instanceof Repeater && b instanceof Repeater) {
       const d1 = haversine(this, a);
       const d2 = haversine(this, b);
-      return compare(d1, d2);
+      return cmp(d1, d2);
     } else if (
       key == "bearing" &&
       a instanceof Repeater &&
@@ -167,15 +119,9 @@ export default class RepeaterTable extends Vue {
     ) {
       const b1 = bearing(this, a);
       const b2 = bearing(this, b);
-      return compare(b1, b2);
-    } else if (typeof a[key] === "number" && typeof b[key] === "number") {
-      // If both compared fields are native numbers
-      return compare(a[key], b[key]);
+      return cmp(b1, b2);
     } else {
-      // Stringify the field data and use String.localeCompare
-      return toString(a[key]).localeCompare(toString(b[key]), undefined, {
-        numeric: true
-      });
+      return sortCompare(a, b, key);
     }
   }
 }
