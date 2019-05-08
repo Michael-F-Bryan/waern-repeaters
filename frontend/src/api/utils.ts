@@ -6,6 +6,13 @@ export interface Coordinate {
     longitude: number;
 }
 
+export function IsCoordinate(item: any): item is Coordinate {
+    console.log(item);
+    return (
+        item && item.latitude instanceof Number && item.longitude instanceof Number
+    );
+}
+
 export function radians(degrees: number): number {
     return (degrees * Math.PI) / 180;
 }
